@@ -4,7 +4,7 @@ import os
 import sys
 
 
-ENV_VAR_KEYS = []
+ENV_VAR_KEYS = ["TMDB_API_TOKEN"]
 ENV_VARS_FILEPATH = "env.json"
 
 
