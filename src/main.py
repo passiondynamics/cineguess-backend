@@ -10,7 +10,7 @@ def main():
 
     # api authorization
     headers = {
-        "accept": "application/json",
+        "Accept": "application/json",
         "Authorization": "Bearer " + env_vars["TMDB_API_TOKEN"],
     }
 
@@ -18,9 +18,9 @@ def main():
     data = extract_movie_data(
         data
     )  # removes any animated movies from the list and any unnecessary data
-    data = actors(data, headers)  # adds the top actors to the json
-    data = actor_images(data, headers)  # adds the top actors images to the json
-    data = related_movies(
+    actors(data, headers)  # adds the top actors to the json
+    actor_images(data, headers)  # adds the top actors images to the json
+    related_movies(
         data, headers
     )  # find any related movies that could be alternative answers
 
