@@ -153,9 +153,9 @@ def actor_images(movies, headers):
     :param movies: dict - movie data
     :param headers: dict - api authorization header
     """
-    actor_urls = []
 
     for movie in movies.get("movies", []):
+        actor_urls = []
         actor_ids = movie.get("actors", [])
         for actor_id in actor_ids:
 
@@ -175,10 +175,10 @@ def actor_images(movies, headers):
                 image_url = next(find_1080p_image, images[0]["file_path"])
                 actor_urls.append(image_url)
 
-            movie["actor_images"] = (
-                actor_urls  # note for testing make sure this adds to actor_images and does not overwrite actor images
-            )
-            # TODO: I don't understand what's going on here ^.
+        movie["actor_images"] = (
+            actor_urls  # note for testing make sure this adds to actor_images and does not overwrite actor images
+        )
+        # TODO: I don't understand what's going on here ^.
 
 
 def related_movies(movies, headers):
