@@ -1,92 +1,123 @@
 import requests
 import json
 
-# standard URL for the TMDB API
-TMDB_BASE_URL = "https://api.themoviedb.org/3/"
-# number of actors that will be used in the game (this will remain at 4)
+# TMDB API endpoints.
+TMDB_BASE_URL = "https://api.themoviedb.org/3"
+TMDB_POPULAR_URI = "/movie/popular"
+TMDB_TOP_RATED_URI = "/movie/top_rated"
+TMDB_MOVIE_ACTORS_URI_FMT = "/movie/{}/credits"
+TMDB_ACTOR_IMAGES_URI_FMT = "/person/{}/images"
+TMDB_ACTOR_CREDITS_URI_FMT = "/person/{}/movie_credits"
+
+CONTENT_LANGUAGE = "en-US"
 NUMBER_OF_ACTORS = 4
+TMDB_REGION_CODE_USA = (
+    840  # See https://en.wikipedia.org/wiki/ISO_3166-1 for other country codes.
+)
+TMDB_GENRE_ANIMATION = 16
+
 
 def popular_movies(pages, headers):
     """
-        This function calls the TMDB API for the popular movies list
-    
-        :param pages: int - number of pages of top rated movies to get there are 20 results on each page
-        :param headers: dict - api authorization header
-        :return: dict return the api response of popular movies
+    Calls the TMDB API for the popular movies list
+
+    :param pages: int - number of pages of top rated movies to get (there are 20 results on each page)
+    :param headers: dict - api authorization header
+    :return: dict - the api response of popular movies
     """
-    
+
     # api endpoint
-    url = "{}movie/popular?language=en-US&page={}&region=840".format(TMDB_BASE_URL, pages) # region 840 is USA see https://en.wikipedia.org/wiki/ISO_3166-1 for other country codes
+    url = "{}{}".format(TMDB_BASE_URL, TMDB_POPULAR_URI)
+    params = {
+        "language": CONTENT_LANGUAGE,
+        "page": pages,
+        "region": TMDB_REGION_CODE_USA,
+    }
 
     # use the api url and headers to get the information on the popular movies
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, params=params, headers=headers)
     return response.json()
 
 
 def toprated_movies(pages, headers):
+    """
+    Calls the TMDB API for the top rated movies list
 
+    :param pages: int - number of pages of top rated movies to get (20 per page)
+    :param headers: dict - api authorization header
+    :return: dict - the api response of top rated movies
     """
-        This function calls the TMDB API for the top rated movies list
-    
-        :param pages: int - number of pages of top rated movies to get there are 20 results on each page
-        :param headers: dict - api authorization header
-        :return: dict return the api response of top rated movies
-    """
-    
+
     # api endpoint
-    url = "{}movie/top_rated?language=en-US&page={}&region=840".format(TMDB_BASE_URL, pages)
+    url = "{}{}".format(TMDB_BASE_URL, TMDB_TOP_RATED_URI)
+    params = {
+        "language": CONTENT_LANGUAGE,
+        "page": pages,
+        "region": TMDB_REGION_CODE_USA,
+    }
 
     # use the api url and headers to get the information on the popular movies
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, params=params, headers=headers)
     return response.json()
 
 
 def extract_movie_data(movies):
     """
-        Take the movie id and title out of the API results
+    Take the movie id and title out of the API results
 
-        :param movies: dict - a dict of movie data
-        :return: dict return only the extracted data from the movies should be just the ids and the title
+    :param movies: dict - movie data
+    :return: dict - the extracted data for each movie
     """
 
     # extract ID and Title
-    extracted_data = [
-        {"id": movie.get("id"), "title": movie.get("title")}
-        for movie in movies.get("results", [])
-        if 16 not in movie.get("genre_ids", []) # genre 16 is animation we are choosing to ignore it for now since it will be difficult to recognize actors
-    ]
+    extracted_data = []
+    for movie in movies.get("results", []):
+        movie_id = movie.get("id")
+        title = movie.get("title")
+        genre_ids = movie.get("genre_ids", [])
+
+        # We are choosing to ignore animation for now since it will be difficult to recognize actors.
+        if TMDB_GENRE_ANIMATION not in genre_ids:
+            extracted_data.append(
+                {
+                    "id": movie_id,
+                    "title": title,
+                }
+            )
+
     return {"movies": extracted_data}
 
 
 def actors(movies, headers):
     """
-        This function gets the actors from a given movie and then calls the popular_actors function to get the most popular ones
+    Gets the actors from a given movie and then adds the most popular ones to the movie data.
 
-        :param movies: dict - a dict of movie data
-        :param headers: dict - api authorization header
-        :return: dict return the movies dict after adding the most popular actors to each movie
+    :param movies: dict - movie data
+    :param headers: dict - api authorization header
     """
-    
+
     # run an api call on each movie and get the cast, after that call popular_actors to get the most popular actors and add them to the json
     for movie in movies.get("movies", []):
         movie_id = movie.get("id")
+
         # api endpoint
-        url = "{}movie/{}/credits?language=en-US".format(TMDB_BASE_URL, movie_id)
+        movie_actors_uri = TMDB_MOVIE_ACTORS_URI_FMT.format(movie_id)
+        url = "{}{}".format(TMDB_BASE_URL, movie_actors_uri)
+        params = {"language": CONTENT_LANGUAGE}
+
         # use the api url and headers to get the cast
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, params=params, headers=headers)
         most_popular_actors = popular_actors(response.json())
 
         # Update the existing movie data with actor ids
         movie["actors"] = most_popular_actors
 
-    return movies
-
 
 def popular_actors(cast):
     """
-        This is a helper function that gets the most popular actors from a given movie cast.
+    Gets the most popular actors from a given movie cast.
 
-        :param cast: dict - the cast of a certain movie as well as data on the actors one entry looks like this 
+    :param cast: dict - data on the actors in a movie, each entry in the format:
         "cast": [
             {
             "adult": false,
@@ -103,9 +134,10 @@ def popular_actors(cast):
             "order": 0
             }
         ]
-        
-        :return: dict - return the ids of the most popular actors
+
+    :return: dict - the ids of the most popular actors
     """
+
     # sort the cast list based on popularity in descending order
     sorted_cast = sorted(cast["cast"], key=lambda x: x["popularity"], reverse=True)
 
@@ -116,40 +148,46 @@ def popular_actors(cast):
 
 def actor_images(movies, headers):
     """
-        This function gets the actors images from the api
+    Gets the actors images from the api
 
-        :param movies: dict - a dict of movie data
-        :param headers: dict - api authorization header
-        :return: dict the updated movies dict with pictures of the actors 
+    :param movies: dict - movie data
+    :param headers: dict - api authorization header
     """
-    actor_url = []
+    actor_urls = []
 
     for movie in movies.get("movies", []):
         actor_ids = movie.get("actors", [])
         for actor_id in actor_ids:
 
             # api endpoint for getting actor images
-            url = "{}person/{}/images".format(TMDB_BASE_URL, actor_id)
+            actor_images_uri = TMDB_ACTOR_IMAGES_URI_FMT.format(actor_id)
+            url = "{}{}".format(TMDB_BASE_URL, actor_images_uri)
             response = requests.get(url, headers=headers)
             images = response.json().get("profiles", [])
 
             # Get the 1920x1080 image if available, otherwise use the first available image
             if images:
-                image_url = next((img["file_path"] for img in images if img["width"] == 1920 and img["height"] == 1080), images[0]["file_path"])
-                actor_url.append(image_url)
+                find_1080p_image = (
+                    img["file_path"]
+                    for img in images
+                    if img["width"] == 1920 and img["height"] == 1080
+                )
+                image_url = next(find_1080p_image, images[0]["file_path"])
+                actor_urls.append(image_url)
 
-            movie["actor_images"] = actor_url # note for testing make sure this adds to actor_images and does not overwrite actor images
-    
-    return movies
+            movie["actor_images"] = (
+                actor_urls  # note for testing make sure this adds to actor_images and does not overwrite actor images
+            )
+            # TODO: I don't understand what's going on here ^.
 
 
 def related_movies(movies, headers):
     """
-        This function gets the related movies to the movies in our json this is to consider answers that will have the same 4 actors in a sequel
+    Gets the related movies to the given movies (to consider other answers that will have the same 4 actors, e.g. in a
+    sequel)
 
-        :param movies: dict - a dict of movie data
-        :param headers: dict - api authorization header
-        :return: dict the movies dict with the related movies added
+    :param movies: dict - movie data
+    :param headers: dict - api authorization header
     """
 
     movie_set = None
@@ -158,10 +196,12 @@ def related_movies(movies, headers):
         actor_ids = movie.get("actors", [])
         for actor_id in actor_ids:
             # api endpoint
-            actor_url = "{}person/{}/movie_credits?language=en-US".format(TMDB_BASE_URL, actor_id)
-            actor_response = requests.get(actor_url, headers=headers)
-            actor_movies = actor_response.json().get("cast", [])
-            
+            actor_credits_uri = TMDB_ACTOR_CREDITS_URI_FMT.format(actor_id)
+            url = "{}{}".format(TMDB_BASE_URL, actor_credits_uri)
+            params = {"language": CONTENT_LANGUAGE}
+            response = requests.get(url, params=params, headers=headers)
+            actor_movies = response.json().get("cast", [])
+
             # create a set of the movies and then find the intersection of those sets
             if movie_set is None:
                 movie_set = set(m["title"] for m in actor_movies)
@@ -171,5 +211,3 @@ def related_movies(movies, headers):
 
         # add the alternative answers to the movie json
         movie["alternative_answers"] = movie_set
-
-    return movies
