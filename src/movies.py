@@ -178,7 +178,6 @@ def actor_images(movies, headers):
         movie["actor_images"] = (
             actor_urls  # note for testing make sure this adds to actor_images and does not overwrite actor images
         )
-        # TODO: I don't understand what's going on here ^.
 
 
 def related_movies(movies, headers):
