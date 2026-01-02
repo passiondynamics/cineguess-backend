@@ -1,5 +1,4 @@
 AWSTemplateFormatVersion: 2010-09-09
-Transform: AWS::LanguageExtensions
 Parameters:
   Component:
     Type: String
@@ -19,7 +18,14 @@ Parameters:
   EnvVars:
     Type: String
     Description: The encoded environment variable key-pairs to attach to the Lambda.
+  APIGatewayID:
+    Type: String
+    Description: The ID of the API in API Gateway.
+  APIGatewayRoleARN:
+    Type: String
+    Description: The ARN of the IAM role for API Gateway to assume for invoking the Lambda.
 Resources:
+  # --- Main Lambda function ---
   LambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
@@ -49,6 +55,8 @@ Resources:
         - Key: env
           Value: !Ref Env
       Timeout: 30
+
+  # --- IAM resources (to attach to the Lambda) ---
   LambdaRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -63,6 +71,7 @@ Resources:
       Tags:
         - Key: env
           Value: !Ref Env
+
   LambdaPolicy:
     Type: 'AWS::IAM::ManagedPolicy'
     Properties:
@@ -76,9 +85,107 @@ Resources:
               - 'logs:CreateLogStream'
               - 'logs:PutLogEvents'
             Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${Component}-${Env}:*'
+          - Effect: Allow
+            Action: 'dynamodb:Query'
+            Resource:
+              - !GetAtt DynamoDBTable.Arn
+              - !Sub
+                - '${Arn}/index/*'
+                - Arn: !GetAtt DynamoDBTable.Arn
+          - Effect: Allow
+            Action: 'dynamodb:UpdateItem'
+            Resource: !GetAtt DynamoDBTable.Arn
       Roles:
         - !Ref LambdaRole
 #      Tags:
 #        - Key: env
 #          Value: !Ref Env
 
+  ScheduleRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: 'sts:AssumeRole'
+      RoleName: !Sub '${Component}-${Env}-schedule-role'
+      Tags:
+        - Key: env
+          Value: !Ref Env
+
+  SchedulePolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Sub '${Component}-${Env}-schedule-policy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource: # TODO: use !Sub ${!GetAtt LambdaFunction}?
+              - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Component}-${Env}:*"
+              - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Component}-${Env}"
+      Roles:
+        - !Ref ScheduleRole
+#      Tags:
+#        - Key: env
+#          Value: !Ref Env
+
+  # --- DynamoDB resource (for persisting state across invocations) ---
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::GlobalTable'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: challenge_date
+          AttributeType: S
+        - AttributeName: id
+          AttributeType: N
+      BillingMode: PAY_PER_REQUEST
+      GlobalSecondaryIndexes:
+        - IndexName: id-lookup-index
+          KeySchema:
+            - AttributeName: id
+              KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+      KeySchema:
+        - AttributeName: challenge_date
+          KeyType: HASH
+      Replicas:
+        - Region: us-east-1
+          Tags:
+            - Key: env
+              Value: !Ref Env
+      TableName: !Sub '${Component}-${Env}-state'
+
+  # --- Schedule resource (for regular, scheduled invocations) ---
+  Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(7 days)
+      Target:
+        Arn: !GetAtt LambdaFunction.Arn
+        RoleArn: !GetAtt ScheduleRole.Arn
+
+  # --- API Gateway resources (to allow external invocation) ---
+  APIGatewayRoute:
+    Type: 'AWS::ApiGatewayV2::Route'
+    Properties:
+      ApiId: !Ref APIGatewayID
+      RouteKey: !Sub 'ANY /${Component}'
+      Target: !Sub 'integrations/${APIGatewayIntegration}'
+
+  APIGatewayIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    Properties:
+      ApiId: !Ref APIGatewayID
+      CredentialsArn: !Ref APIGatewayRoleARN
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LambdaFunction.Arn
+      PayloadFormatVersion: '2.0'

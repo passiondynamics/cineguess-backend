@@ -5,6 +5,12 @@ on:
     branches:
       - main
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - assigned
+      - unassigned
     branches:
       - main
 
@@ -24,21 +30,29 @@ jobs:
           rn="${{github.event.repository.name}}"
           pi="${{github.event.repository.owner.login}}.$rn.${{github.run_id}}.${{github.run_attempt}}"
           af="artifact-$pi.zip"
-          [ "${{github.event_name}}" == "push" ] && de="prod" || de="dev"
+          if [ "${{github.event_name}}" == "push" ]; then
+              de="prod"
+              gai="null"
+          else
+              de="dev"
+              gai=$(jq -cn '["${{github.event.pull_request.user.id}}"] + [${{toJSON(github.event.pull_request.assignees)}}[].id | tostring] | unique')
+          fi
           abk="$de/$rn/$af"
 
           echo "[*] Pipeline vars:"
-          printf "artifact_filename=$af\nartifact_bucket_key=$abk\ndeployment_env=$de\npipeline_id=$pi\nrepository_name=$rn\n" | tee -a "$GITHUB_OUTPUT"
+          printf "artifact_filename=$af\nartifact_bucket_key=$abk\ndeployment_env=$de\npipeline_id=$pi\nrepository_name=$rn\ngithub_assignee_ids=$gai\n" | tee -a "$GITHUB_OUTPUT"
     outputs:
       artifact_filename: ${{steps.pipeline_vars.outputs.artifact_filename}}
       artifact_bucket_key: ${{steps.pipeline_vars.outputs.artifact_bucket_key}}
       deployment_env: ${{steps.pipeline_vars.outputs.deployment_env}}
       repository_name: ${{steps.pipeline_vars.outputs.repository_name}}
       pipeline_id: ${{steps.pipeline_vars.outputs.pipeline_id}}
+      github_assignee_ids: ${{steps.pipeline_vars.outputs.github_assignee_ids}}
   build:
     name: Build
     needs: init
     runs-on: ubuntu-latest
+    # Needed for access to vars defined in Github for `dev` and `prod`.
     environment: ${{needs.init.outputs.deployment_env}}
     env:
       # Use env vars for easier repeated reference.
@@ -64,9 +78,16 @@ jobs:
           echo "[*] Syncing `Pipfile.lock`..."
           pipenv sync --dev
       - name: Run linter
-        run: pipenv run black --check src
+        run: pipenv run black --diff --check src/
       - name: Run unit tests
-        run: pipenv run pytest --cov=src --cov-fail-under=${{vars.TEST_COVERAGE_MINIMUM}} tests/unit/
+        run: |
+          pipenv run pytest --cov=src tests/unit/
+          printf "# Unit test coverage\n\n" >> "$GITHUB_STEP_SUMMARY"
+          pipenv run coverage report --skip-empty -m --format=markdown --fail-under "${{vars.TEST_COVERAGE_MINIMUM}}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # Stop the pipeline if under test coverage minimum.
+          tail -n 1 "$GITHUB_STEP_SUMMARY" | grep -v "Coverage failure: "
+      # TODO: re-use artifact if nothing has changed.
       - name: Build artifact
         run: |
           echo "[*] Downloading dependencies..."
@@ -83,7 +104,7 @@ jobs:
           echo "[*] Cleaning up workspace..."
           rm -r requirements.txt package/
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{vars.AWS_REGION}}
           role-to-assume: ${{vars.AWS_DEPLOY_ROLE_ARN}}
@@ -104,8 +125,9 @@ jobs:
       - name: Write env vars to output
         id: write_env_vars
         run: |
-          ENV_VARS='${{toJson(vars)}}' python src/config.py --no-pretty
-          ls -Ahl
+          # Use jq to create ENV_VARS w/ env and PR author details.
+          export ENV_VARS=$(jq -cn '${{toJSON(vars)}} + {"ENV": "${{needs.init.outputs.deployment_env}}", "GITHUB_ASSIGNEE_IDS": ${{needs.init.outputs.github_assignee_ids}}}')
+          python src/config.py --no-pretty
           echo "env_vars=$(cat env.json)" | tee -a "$GITHUB_OUTPUT"
     outputs:
       cft_content: ${{steps.write_cft.outputs.cft_content}}
@@ -144,7 +166,9 @@ jobs:
             Env="${{env.deployment_env}}",
             ArtifactBucketName="${{vars.S3_ARTIFACT_BUCKET_NAME}}",
             CodeArtifactBucketKey="${{env.artifact_bucket_key}}",
-            EnvVars='${{needs.build.outputs.env_vars}}'
+            EnvVars='${{needs.build.outputs.env_vars}}',
+            APIGatewayID="${{vars.AWS_API_GATEWAY_ID}}",
+            APIGatewayRoleARN="${{vars.AWS_API_GATEWAY_ROLE_ARN}}"
           tags: '[{"Key": "env", "Value": "${{env.deployment_env}}"}]'
 
 #
